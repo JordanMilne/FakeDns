@@ -11,11 +11,13 @@ import socket
 import re
 import sys
 import os
+import pwd
+import grp
 import SocketServer
 import signal
 import argparse
-
-# inspired from DNSChef
+import time
+import subprocess
 
 
 class ThreadedUDPServer(SocketServer.ThreadingMixIn, SocketServer.UDPServer):
@@ -33,8 +35,7 @@ class UDPHandler(SocketServer.BaseRequestHandler):
         respond(data, self.client_address, s)
 
 
-class DNSQuery:
-
+class DNSQuery(object):
     def __init__(self, data):
         self.data = data
         self.dominio = ''
@@ -142,7 +143,7 @@ def _get_question_section(query):
     return query.data[start_idx:end_idx]
 
 
-class DNSResponse(object):
+class FullDNSResponse(object):
 
     def __init__(self, query):
         self.id = query.data[:2]        # Use the ID from the request.
@@ -174,19 +175,63 @@ class DNSResponse(object):
             pdb.set_trace()
         return self.packet
 
+
+class DNSResponseWrapper(object):
+    def __init__(self, query, rrs):
+        self.id = query.data[:2]        # Use the ID from the request.
+        self.flags = "\x81\x80"         # No errors, we never have those.
+        self.questions = query.data[4:6]  # Number of questions asked...
+        # Answer RRs (Answer resource records contained in response) 1 for now.
+        self.rranswers = "\x00" + chr(len(rrs))
+        self.rrauthority = "\x00\x00"   # Same but for authority
+        self.rradditional = "\x00\x00"  # Same but for additionals.
+        # Include the question section
+        self.query = _get_question_section(query)
+        # The pointer to the resource record - seems to always be this value.
+        self.rrs = rrs
+
+    def make_packet(self):
+        try:
+            self.packet = self.id + self.flags + self.questions + self.rranswers + self.rrauthority + \
+                self.rradditional + self.query + ''.join(x.make_packet() for x in self.rrs)
+        except:
+            pdb.set_trace()
+        return self.packet
+
+
+class DNSResponse(object):
+
+    def __init__(self):
+        # This value is set by the subclass and is defined in TYPE dict.
+        self.type = None
+        self.pointer = "\xc0\x0c"
+        self.dnsclass = "\x00\x01"      # "IN" class.
+        # TODO: Make this adjustable - 1 is good for noobs/testers
+        self.ttl = "\x00\x00\x00\x01"
+        # Set by subclass because is variable except in A/AAAA records.
+        self.length = None
+        self.data = None                # Same as above.
+
+    def make_packet(self):
+        try:
+            self.packet = self.pointer + self.type + self.dnsclass + self.ttl + self.length + self.data
+        except:
+            pdb.set_trace()
+        return self.packet
+
 # All classess need to set type, length, and data fields of the DNS Response
 # Finished
 
 
 class A(DNSResponse):
 
-    def __init__(self, query, record):
-        super(A, self).__init__(query)
+    def __init__(self, record):
+        super(A, self).__init__()
         self.type = "\x00\x01"
         self.length = "\x00\x04"
-        self.data = self.get_ip(record, query)
+        self.data = self.get_ip(record)
 
-    def get_ip(self, dns_record, query):
+    def get_ip(self, dns_record):
         ip = dns_record
         # Convert to hex
         return str.join('', map(lambda x: chr(int(x)), ip.split('.')))
@@ -269,7 +314,7 @@ CASE = {
 # Technically this is a subclass of A
 
 
-class NONEFOUND(DNSResponse):
+class NONEFOUND(FullDNSResponse):
 
     def __init__(self, query):
         super(NONEFOUND, self).__init__(query)
@@ -281,8 +326,7 @@ class NONEFOUND(DNSResponse):
         print ">> Built NONEFOUND response"
 
 
-class ruleEngine:
-
+class RuleEngine(object):
     def __init__(self, file):
 
         # Hackish place to track our DNS rebinding
@@ -343,46 +387,34 @@ class ruleEngine:
         for rule in self.re_list:
             # Match on the domain, then on the query type
             if rule[1].match(query.dominio):
-                if query.type in TYPE.keys() and rule[0] == TYPE[query.type]:
+                if query.type in TYPE and rule[0] == TYPE[query.type]:
                     # OK, this is a full match, fire away with the correct
                     # response type:
 
                     # Check our DNS Rebinding tracker and see if we need to
                     # respond with the second address now...
-                    if args.rebind == True and len(rule) >= 3 and addr in self.match_history.keys():
-                        # use second address (rule[3])
-                        response_data = rule[3]
-                        self.match_history[addr] += 1
-                    elif args.rebind == True and len(rule) >= 3:
-                        self.match_history[addr] = 1
-                        response_data = rule[2]
+                    responses = []
+                    if args.rebind and len(rule) >= 3:
+                        if query.dominio not in self.match_history:
+                            self.match_history[query.dominio] = time.time()
+                        time_after = time.time() - self.match_history[query.dominio]
+                        if time_after < 2:
+                            responses = (rule[2],)
+                        else:
+                            responses = (rule[3],)
                     else:
-                        response_data = rule[2]
+                        responses = (rule[2],)
 
-                    response = CASE[query.type](query, response_data)
+                    responses = map(CASE[query.type], responses)
                     print ">> Matched Request - " + query.dominio
-                    return response.make_packet()
+                    return DNSResponseWrapper(query, responses).make_packet()
 
-        # OK, we don't have a rule for it, lets see if it exists...
-        try:
-            # We need to handle the request potentially being a TXT,A,MX,ect... request.
-            # So....we make a socket and literally just forward the request raw
-            # to our DNS server.
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(3.0)
-            addr = ('8.8.8.8', 53)
-            s.sendto(query.data, addr)
-            data = s.recv(1024)
-            s.close()
-            print "Unmatched Request " + query.dominio
-            return data
-        except:
-            # We really shouldn't end up here, but if we do, we want to handle it gracefully and not let down the client.
-            # The cool thing about this is that NOTFOUND will take the type straight out of
-            # the query object and build the correct query response type from
-            # that automagically
-            print ">> Error was handled by sending NONEFOUND"
-            return NONEFOUND(query).make_packet()
+        # We really shouldn't end up here, but if we do, we want to handle it gracefully and not let down the client.
+        # The cool thing about this is that NOTFOUND will take the type straight out of
+        # the query object and build the correct query response type from
+        # that automagically
+        print ">> Error was handled by sending NONEFOUND"
+        return NONEFOUND(query).make_packet()
 
 # Convenience method for threading.
 
@@ -397,6 +429,27 @@ def respond(data, addr, s):
 def signal_handler(signal, frame):
     print 'Exiting...'
     sys.exit(0)
+
+
+def drop_privileges(uid_name='nobody', gid_name='nogroup'):
+    if os.getuid() != 0:
+        # We're not root so, like, whatever dude
+        return
+
+    # Get the uid/gid from the name
+    running_uid = pwd.getpwnam(uid_name).pw_uid
+    running_gid = grp.getgrnam(gid_name).gr_gid
+
+    # Remove group privileges
+    os.setgroups([])
+
+    # Try setting the new uid/gid
+    os.setgid(running_gid)
+    os.setuid(running_uid)
+
+    # Ensure a very conservative umask
+    old_umask = os.umask(077)
+
 
 if __name__ == '__main__':
 
@@ -416,7 +469,7 @@ if __name__ == '__main__':
         print '>> Please create a "dns.conf" file or specify a config path: ./fakedns.py [configfile]'
         exit()
 
-    rules = ruleEngine(path)
+    rules = RuleEngine(path)
     re_list = rules.re_list
 
     interface = args.iface
@@ -425,8 +478,13 @@ if __name__ == '__main__':
     try:
         server = ThreadedUDPServer((interface, int(port)), UDPHandler)
     except:
+        raise
         print ">> Could not start server -- is another program on udp:53?"
         exit(1)
+
+    # We don't need any special privileges now that we're bound to the
+    # port, drop 'em.
+    drop_privileges()
 
     server.daemon = True
     signal.signal(signal.SIGINT, signal_handler)
