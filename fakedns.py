@@ -397,6 +397,12 @@ class RuleEngine(object):
                     if args.rebind and len(rule) >= 3:
                         if query.dominio not in self.match_history:
                             self.match_history[query.dominio] = time.time()
+                            # TODO use a single cleanup thread
+                            def cleanup_rebinding():
+                                del match_history[query.dominio]
+                            timer = threading.Timer(600.0, cleanup_rebinding)
+                            timer.daemon = True
+                            timer.start()
                         time_after = time.time() - self.match_history[query.dominio]
                         if time_after < 2:
                             responses = (rule[2],)
