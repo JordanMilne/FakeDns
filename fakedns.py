@@ -1,8 +1,8 @@
 #!/usr/bin/python
-"""													"""
-"""                    Fakedns.py					"""
-"""    A regular-expression based DNS MITM Server	"""
-"""						by: Crypt0s					"""
+"""                                                 """
+"""                    Fakedns.py                   """
+"""    A regular-expression based DNS MITM Server   """
+"""                     by: Crypt0s                 """
 
 import pdb
 import threading
@@ -18,6 +18,11 @@ import signal
 import argparse
 import time
 import subprocess
+
+import memcache
+
+FAKEDNS_MEMCACHED = os.getenv('FAKEDNS_MEMCACHED') or '127.0.0.1:11211'
+mc = memcache.Client([FAKEDNS_MEMCACHED], debug=0)
 
 
 class ThreadedUDPServer(SocketServer.ThreadingMixIn, SocketServer.UDPServer):
@@ -329,9 +334,6 @@ class NONEFOUND(FullDNSResponse):
 class RuleEngine(object):
     def __init__(self, file):
 
-        # Hackish place to track our DNS rebinding
-        self.match_history = {}
-
         self.re_list = []
         print '>>', 'Parse rules...'
         with open(file, 'r') as rulefile:
@@ -395,19 +397,17 @@ class RuleEngine(object):
                     # respond with the second address now...
                     responses = []
                     if args.rebind and len(rule) >= 3:
-                        if query.dominio not in self.match_history:
-                            self.match_history[query.dominio] = time.time()
-                            # TODO use a single cleanup thread
-                            def cleanup_rebinding():
-                                del match_history[query.dominio]
-                            timer = threading.Timer(600.0, cleanup_rebinding)
-                            timer.daemon = True
-                            timer.start()
-                        time_after = time.time() - self.match_history[query.dominio]
-                        if time_after < 2:
-                            responses = (rule[2],)
-                        else:
+                        first_requested = mc.get(query.dominio)
+                        if first_requested is None:
+                            first_requested = time.time()
+                            mc.set(query.dominio, first_requested, time=60*60)
+                        secs_since = time.time() - first_requested
+                        # The domain should rebind once two seconds have
+                        # passed since the first request
+                        if secs_since >= 2:
                             responses = (rule[3],)
+                        else:
+                            responses = (rule[2],)
                     else:
                         responses = (rule[2],)
 
