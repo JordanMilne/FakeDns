@@ -1,4 +1,1 @@
-A .*reddit.* 8.8.8.8
-TXT .* HELLO
-AAAA lulz.com 2607:f8b0:4006:807::100e
-A .*rebind.* 1.1.1.1 2.2.2.2
+A \A([a-zA-Z0-9_\-\.]+\.)?ptrrebind\.example\.com\.?\Z 162.243.184.29 127.0.0.1

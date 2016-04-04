@@ -147,7 +147,7 @@ class FullDNSResponse(object):
 
     def __init__(self, query):
         self.id = query.data[:2]        # Use the ID from the request.
-        self.flags = "\x81\x80"         # No errors, we never have those.
+        self.flags = "\x81\x20"         # No errors, we never have those.
         self.questions = query.data[4:6]  # Number of questions asked...
         # Answer RRs (Answer resource records contained in response) 1 for now.
         self.rranswers = "\x00\x01"
