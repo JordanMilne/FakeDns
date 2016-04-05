@@ -396,15 +396,13 @@ class RuleEngine(object):
                     # Check our DNS Rebinding tracker and see if we need to
                     # respond with the second address now...
                     responses = []
-                    if args.rebind and len(rule) >= 3:
-                        first_requested = mc.get(query.dominio)
-                        if first_requested is None:
-                            first_requested = time.time()
-                            mc.set(query.dominio, first_requested, time=60*60)
-                        secs_since = time.time() - first_requested
-                        # The domain should rebind once two seconds have
-                        # passed since the first request
-                        if secs_since >= 2:
+                    if args.rebind and len(rule) >= 4:
+                        time_to_rebind = mc.get(query.dominio)
+                        if time_to_rebind is None:
+                            time_to_rebind = time.time() + int(rule[4])
+                            mc.set(query.dominio, time_to_rebind, time=60*60*24)
+
+                        if time.time() >= time_to_rebind:
                             responses = (rule[3],)
                         else:
                             responses = (rule[2],)

@@ -1,1 +1,2 @@
-A \A([a-zA-Z0-9_\-\.]+\.)?ptrrebind\.example\.com\.?\Z 162.243.184.29 127.0.0.1
+A \Aslowrebind-([a-zA-Z0-9_\-\.]+\.)?ptrrebind\.example\.com\.?\Z 1.2.3.4 127.0.0.1 600
+A \A([a-zA-Z0-9_\-\.]+\.)?ptrrebind\.example\.com\.?\Z 1.2.3.4 127.0.0.1 3
